@@ -13,7 +13,7 @@ where it shows up -- an action you add only appears in views where it's valid.
 
 import json
 
-from binaryninja.log import log_error
+from binaryninja.log import log_debug, log_error
 from binaryninja.settings import Settings
 from binaryninja.enums import SettingsScope
 
@@ -68,11 +68,26 @@ def current_group_order():
         return DEFAULT_ORDER
 
 
+def _log_op_failure(operation, exc, action=None):
+    """Low-noise diagnostic for a menu/view API call that we recover from.
+
+    Logged at debug level so it's invisible during normal use, but available
+    when chasing a UI-lifecycle or binding issue (e.g. a Python wrapper around
+    a freed C++ object, an action name that's been unregistered, or a view
+    type whose contextMenu() doesn't behave the way we expect).
+    """
+    if action is not None:
+        log_debug("Custom Context: %s failed for %r: %s" % (operation, action, exc))
+    else:
+        log_debug("Custom Context: %s failed: %s" % (operation, exc))
+
+
 def _group_of(menu, action):
     """Which menu group an action belongs to, or None if it can't be determined."""
     try:
         return menu.getGroupForAction(action)
-    except Exception:
+    except Exception as e:
+        _log_op_failure("menu.getGroupForAction", e, action=action)
         return None
 
 
@@ -87,7 +102,8 @@ def sync_menu(menu):
     desired = current_actions()
     try:
         present = dict(menu.getActions())
-    except Exception:
+    except Exception as e:
+        _log_op_failure("menu.getActions", e)
         present = {}
 
     ours = {a for a in present if _group_of(menu, a) == MENU_GROUP}
@@ -96,23 +112,23 @@ def sync_menu(menu):
     for action in ours - set(desired):
         try:
             menu.removeAction(action)
-        except Exception:
-            pass
+        except Exception as e:
+            _log_op_failure("menu.removeAction", e, action=action)
 
     # Add desired actions in order. addAction is an upsert keyed by name, so
     # re-adding our existing items simply refreshes their ordering. An action
     # already present in a native group is left untouched.
     try:
         menu.setGroupOrdering(MENU_GROUP, current_group_order())
-    except Exception:
-        pass
+    except Exception as e:
+        _log_op_failure("menu.setGroupOrdering", e)
     for index, action in enumerate(desired):
         if action in present and action not in ours:
             continue  # native item with this name -- don't disturb it
         try:
             menu.addAction(action, MENU_GROUP, min(index, 255))
-        except Exception:
-            pass
+        except Exception as e:
+            _log_op_failure("menu.addAction", e, action=action)
 
 
 if _UI_AVAILABLE:
@@ -160,24 +176,27 @@ if _UI_AVAILABLE:
         for ctx in UIContext.allContexts():
             try:
                 tabs = ctx.getTabs()
-            except Exception:
+            except Exception as e:
+                _log_op_failure("UIContext.getTabs", e)
                 continue
             for tab in tabs:
                 try:
                     frames = ctx.getAllViewFramesForTab(tab)
-                except Exception:
+                except Exception as e:
+                    _log_op_failure("UIContext.getAllViewFramesForTab", e)
                     continue
                 for frame in frames:
                     try:
                         view = frame.getCurrentViewInterface()
-                    except Exception:
+                    except Exception as e:
+                        _log_op_failure("ViewFrame.getCurrentViewInterface", e)
                         view = None
                     if view is None:
                         continue
                     try:
                         sync_menu(view.contextMenu())
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log_op_failure("sync_menu(view.contextMenu()) for open view", e)
 
     class ConfigureDialog(QDialog):
         """Two-pane picker: search/add on the left, ordered selection on the right."""
@@ -298,29 +317,34 @@ if _UI_AVAILABLE:
             native = set()
             try:
                 contexts = UIContext.allContexts()
-            except Exception:
+            except Exception as e:
+                _log_op_failure("UIContext.allContexts (native probe)", e)
                 return native
             for ctx in contexts:
                 try:
                     tabs = ctx.getTabs()
-                except Exception:
+                except Exception as e:
+                    _log_op_failure("UIContext.getTabs (native probe)", e)
                     continue
                 for tab in tabs:
                     try:
                         frames = ctx.getAllViewFramesForTab(tab)
-                    except Exception:
+                    except Exception as e:
+                        _log_op_failure("UIContext.getAllViewFramesForTab (native probe)", e)
                         continue
                     for frame in frames:
                         try:
                             view = frame.getCurrentViewInterface()
-                        except Exception:
+                        except Exception as e:
+                            _log_op_failure("ViewFrame.getCurrentViewInterface (native probe)", e)
                             continue
                         if view is None:
                             continue
                         try:
                             menu = view.contextMenu()
                             actions = dict(menu.getActions())
-                        except Exception:
+                        except Exception as e:
+                            _log_op_failure("view.contextMenu().getActions (native probe)", e)
                             continue
                         for a in actions:
                             # Exclude items we ourselves contributed -- those are
