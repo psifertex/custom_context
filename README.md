@@ -33,6 +33,14 @@ opened afterward picks up the configuration as well.
   submenus, exactly as they appear elsewhere in the menus.
 - Actions that are already part of a view's native context menu are left
   untouched rather than duplicated.
+- In the configuration dialog, actions that are already in the right-click menu
+  are shown **greyed out** in the available list. Hover for the reason — either
+  the action is already in your selection on the right, or it's a native item in
+  an open view's right-click menu. (Native detection looks at the currently open
+  views; with no file open the dialog can't probe and disables nothing on that
+  basis.) The plugin's sync would skip such duplicates anyway; the disable just
+  surfaces that up front so you don't add an action expecting it to appear and
+  then wonder why it doesn't.
 
 ## How it works
 

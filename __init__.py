@@ -190,7 +190,9 @@ if _UI_AVAILABLE:
             intro = QLabel(
                 "Add registered actions to the right-click context menu. An action "
                 "only appears in views where it's valid; elsewhere Binary Ninja hides "
-                "it automatically. Names containing '\\' render as submenus.")
+                "it automatically. Names containing '\\' render as submenus. "
+                "Greyed-out actions are already in the right-click menu — hover for "
+                "the reason.")
             intro.setWordWrap(True)
 
             # --- Available actions (left) ---
@@ -233,6 +235,12 @@ if _UI_AVAILABLE:
             self.selected.itemDoubleClicked.connect(lambda _item: self.removeSelected())
             for name in current_actions_raw():
                 self.selected.addItem(QListWidgetItem(name))
+
+            # Cache which actions are already present natively in any open view's
+            # right-click menu so we can disable them in the available list with
+            # an explanation. The set is fixed for the dialog's modal lifetime.
+            self._native_actions = self._collect_native_actions()
+            self._refresh_available_states()
 
             self.upButton = QPushButton("Move Up")
             self.upButton.clicked.connect(lambda: self.move(-1))
@@ -285,6 +293,60 @@ if _UI_AVAILABLE:
         def _selectedNames(self):
             return {self.selected.item(i).text() for i in range(self.selected.count())}
 
+        def _collect_native_actions(self):
+            """Action names already in some open view's right-click menu (not ours)."""
+            native = set()
+            try:
+                contexts = UIContext.allContexts()
+            except Exception:
+                return native
+            for ctx in contexts:
+                try:
+                    tabs = ctx.getTabs()
+                except Exception:
+                    continue
+                for tab in tabs:
+                    try:
+                        frames = ctx.getAllViewFramesForTab(tab)
+                    except Exception:
+                        continue
+                    for frame in frames:
+                        try:
+                            view = frame.getCurrentViewInterface()
+                        except Exception:
+                            continue
+                        if view is None:
+                            continue
+                        try:
+                            menu = view.contextMenu()
+                            actions = dict(menu.getActions())
+                        except Exception:
+                            continue
+                        for a in actions:
+                            # Exclude items we ourselves contributed -- those are
+                            # captured by the selection check, not the native one.
+                            if _group_of(menu, a) != MENU_GROUP:
+                                native.add(a)
+            return native
+
+        def _refresh_available_states(self):
+            """Disable items already in the right-click menu (selected or native)."""
+            selected = self._selectedNames()
+            for i in range(self.available.count()):
+                item = self.available.item(i)
+                name = item.text()
+                if name in selected:
+                    item.setFlags(item.flags() & ~(Qt.ItemIsEnabled | Qt.ItemIsSelectable))
+                    item.setToolTip("Already added below — remove it on the right to re-enable.")
+                elif name in self._native_actions:
+                    item.setFlags(item.flags() & ~(Qt.ItemIsEnabled | Qt.ItemIsSelectable))
+                    item.setToolTip("Binary Ninja already shows this in the right-click "
+                                    "menu of an open view, so the plugin would skip it "
+                                    "to avoid a duplicate.")
+                else:
+                    item.setFlags(item.flags() | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                    item.setToolTip("")
+
         def addSelected(self):
             present = self._selectedNames()
             for item in self.available.selectedItems():
@@ -292,21 +354,44 @@ if _UI_AVAILABLE:
                 if name not in present:
                     self.selected.addItem(QListWidgetItem(name))
                     present.add(name)
+            self._refresh_available_states()
 
         def removeSelected(self):
             for item in self.selected.selectedItems():
                 self.selected.takeItem(self.selected.row(item))
+            self._refresh_available_states()
 
         def move(self, delta):
-            row = self.selected.currentRow()
-            if row < 0:
+            # Move every selected row by `delta` as a block: take each row in the
+            # right iteration order (ascending for up, descending for down) and
+            # reinsert one position over. Each take/insert is a localised swap
+            # with the neighbour that wasn't selected, so the original indices we
+            # captured up front stay valid for the remaining iterations. If any
+            # selected item is already at the boundary, we bail so the relative
+            # ordering of the block is preserved.
+            if delta not in (-1, 1):
                 return
-            new_row = row + delta
-            if new_row < 0 or new_row >= self.selected.count():
+            rows = sorted(self.selected.row(i) for i in self.selected.selectedItems())
+            if not rows:
                 return
-            item = self.selected.takeItem(row)
-            self.selected.insertItem(new_row, item)
-            self.selected.setCurrentRow(new_row)
+            if delta < 0 and rows[0] == 0:
+                return
+            if delta > 0 and rows[-1] == self.selected.count() - 1:
+                return
+
+            current_item = self.selected.currentItem()
+            iter_rows = rows if delta < 0 else list(reversed(rows))
+            moved = []
+            for r in iter_rows:
+                item = self.selected.takeItem(r)
+                self.selected.insertItem(r + delta, item)
+                moved.append(item)
+
+            self.selected.clearSelection()
+            for item in moved:
+                item.setSelected(True)
+            if current_item is not None:
+                self.selected.setCurrentItem(current_item)
 
         def saveAndAccept(self):
             chosen = [self.selected.item(i).text() for i in range(self.selected.count())]
