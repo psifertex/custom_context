@@ -36,13 +36,20 @@ opened afterward picks up the configuration as well.
 
 ## How it works
 
-The plugin registers a `UIContextNotification` and implements
-`OnContextMenuCreated` to inject the configured actions (by their real registered
-names, in your chosen order, under a dedicated menu group) into each view's
-context menu as it's built. That callback only fires when a view first builds its
-menu, so when you change the configuration the plugin also walks the currently
-open tabs/frames and re-applies the change directly, giving immediate updates
-without a restart.
+The plugin registers a `UIContextNotification` and reconciles each view's
+context menu via three event-driven hooks (no polling / no `isValid` abuse):
+
+- `OnContextMenuCreated` — fires once when a view first builds its (persistent)
+  context menu; adds the configured actions for that view.
+- `OnViewChange` — fires when you switch view type within a frame (e.g.
+  linear ↔ graph), refreshing the now-current view in case it was previously
+  cached with stale items.
+- On dialog save — walks the open tabs/frames and re-applies the change
+  directly, so updates are immediate without a restart.
+
+The sync is stateless and idempotent: the plugin recovers its own items from a
+menu by querying the menu group, rather than tracking object identity (which
+avoids the "Internal C++ object already deleted" GC trap when wrappers churn).
 
 ## Minimum Version
 

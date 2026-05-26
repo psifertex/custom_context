@@ -118,13 +118,18 @@ def sync_menu(menu):
 if _UI_AVAILABLE:
 
     class ContextMenuNotification(UIContextNotification):
-        """Adds the configured actions to a view's context menu when it's built.
+        """Keeps each view's context menu in sync with the user's configuration.
 
-        OnContextMenuCreated fires once, when a view constructs its (persistent)
-        context menu -- not on every right-click -- and only for the
-        linear/graph/hex/types/stack views. That covers views opened from here on;
-        views already open when the configuration changes are refreshed separately
-        by apply_to_open_views().
+        Three event-driven hooks cover the lifecycle of a view's menu without ever
+        polling (no isValid abuse):
+
+        - OnContextMenuCreated fires once when a view first builds its (persistent)
+          context menu, for the linear/graph/hex/types/stack views.
+        - OnViewChange fires when the user switches view type inside a frame, so a
+          view that was previously cached with stale items gets refreshed the
+          moment it becomes current.
+        - apply_to_open_views() (called from the config dialog on save) pushes
+          changes to the current view of every open frame immediately.
         """
 
         def OnContextMenuCreated(self, context, view, menu):
@@ -132,6 +137,18 @@ if _UI_AVAILABLE:
                 sync_menu(menu)
             except Exception as e:
                 log_error("Custom Context: failed to populate context menu: %s" % e)
+
+        def OnViewChange(self, context, frame, view_type):
+            # The view the user just switched to may have been built before the
+            # last config change, so refresh its menu on the way in.
+            try:
+                if frame is None:
+                    return
+                view = frame.getCurrentViewInterface()
+                if view is not None:
+                    sync_menu(view.contextMenu())
+            except Exception as e:
+                log_error("Custom Context: failed to refresh on view change: %s" % e)
 
     def apply_to_open_views():
         """Re-sync the context menu of every currently open view.
