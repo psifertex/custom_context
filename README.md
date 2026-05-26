@@ -18,14 +18,17 @@ Open **Plugins ▸ Custom Context ▸ Configure Context Menu…** to pick action
 - Choose where the block of custom actions sits in the menu with the
   **section position** control (0 = top, 255 = bottom).
 
-Your selections are saved to user settings and take effect on the next
-right-click — no restart needed.
+Your selections are saved to user settings and applied immediately — no restart
+needed. Clicking **OK** refreshes the menus of all open views, and any view
+opened afterward picks up the configuration as well.
 
 ### Notes
 
-- Actions appear only in views where they're valid. Binary Ninja builds context
-  menus with inactive actions hidden, so each action's own `isValid` logic decides
-  where it shows up (e.g. a function-only action won't clutter the hex view).
+- Works in the linear, graph, hex, types, and stack views (the views Binary Ninja
+  exposes a context-menu hook for).
+- Actions appear only where they're valid. Binary Ninja builds context menus with
+  inactive actions hidden, so each action's own `isValid` logic decides where it
+  shows up (e.g. a function-only action won't clutter the hex view).
 - Action names that contain `\` (such as `Patch\Convert to NOP`) render as
   submenus, exactly as they appear elsewhere in the menus.
 - Actions that are already part of a view's native context menu are left
@@ -34,9 +37,12 @@ right-click — no restart needed.
 ## How it works
 
 The plugin registers a `UIContextNotification` and implements
-`OnContextMenuCreated`, injecting the configured actions (by their real
-registered names, in your chosen order, under a dedicated menu group) every time
-a context menu is built.
+`OnContextMenuCreated` to inject the configured actions (by their real registered
+names, in your chosen order, under a dedicated menu group) into each view's
+context menu as it's built. That callback only fires when a view first builds its
+menu, so when you change the configuration the plugin also walks the currently
+open tabs/frames and re-applies the change directly, giving immediate updates
+without a restart.
 
 ## Minimum Version
 

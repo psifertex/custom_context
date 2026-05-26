@@ -68,52 +68,99 @@ def current_group_order():
         return DEFAULT_ORDER
 
 
+def _group_of(menu, action):
+    """Which menu group an action belongs to, or None if it can't be determined."""
+    try:
+        return menu.getGroupForAction(action)
+    except Exception:
+        return None
+
+
+def sync_menu(menu):
+    """Reconcile our group of actions within a single context menu.
+
+    Idempotent and stateless: we recover the items we own by asking the menu
+    which actions are in our group (rather than tracking menu/view wrappers,
+    which invites the "Internal C++ object already deleted" GC bug). Native
+    items are never relocated, duplicated, or removed.
+    """
+    desired = current_actions()
+    try:
+        present = dict(menu.getActions())
+    except Exception:
+        present = {}
+
+    ours = {a for a in present if _group_of(menu, a) == MENU_GROUP}
+
+    # Remove actions we previously added that are no longer wanted.
+    for action in ours - set(desired):
+        try:
+            menu.removeAction(action)
+        except Exception:
+            pass
+
+    # Add desired actions in order. addAction is an upsert keyed by name, so
+    # re-adding our existing items simply refreshes their ordering. An action
+    # already present in a native group is left untouched.
+    try:
+        menu.setGroupOrdering(MENU_GROUP, current_group_order())
+    except Exception:
+        pass
+    for index, action in enumerate(desired):
+        if action in present and action not in ours:
+            continue  # native item with this name -- don't disturb it
+        try:
+            menu.addAction(action, MENU_GROUP, min(index, 255))
+        except Exception:
+            pass
+
+
 if _UI_AVAILABLE:
 
     class ContextMenuNotification(UIContextNotification):
-        """Injects the configured actions into every context menu as it's built."""
+        """Adds the configured actions to a view's context menu when it's built.
 
-        def __init__(self):
-            super().__init__()
-            # Per-menu bookkeeping of the actions *we* added, keyed by id(menu).
-            # The view's context menu object is reused, so this lets us update
-            # ordering and remove deselected actions without ever touching the
-            # native items the view added itself.
-            self._added = {}
+        OnContextMenuCreated fires once, when a view constructs its (persistent)
+        context menu -- not on every right-click -- and only for the
+        linear/graph/hex/types/stack views. That covers views opened from here on;
+        views already open when the configuration changes are refreshed separately
+        by apply_to_open_views().
+        """
 
         def OnContextMenuCreated(self, context, view, menu):
             try:
-                desired = current_actions()
-                try:
-                    existing = set(dict(menu.getActions()))
-                except Exception:
-                    existing = set()
-
-                record = self._added.setdefault(id(menu), set())
-                # Anything already in the menu that we didn't add is native --
-                # leave it strictly alone (don't relocate it, don't remove it).
-                native = existing - record
-
-                # Drop actions we previously added that are no longer wanted.
-                for action in list(record):
-                    if action not in desired:
-                        try:
-                            menu.removeAction(action)
-                        except Exception:
-                            pass
-                        record.discard(action)
-
-                # Add / refresh the desired actions in the user's order. addAction
-                # is an upsert keyed by action name, so re-adding simply updates
-                # the ordering when the user has reordered them.
-                menu.setGroupOrdering(MENU_GROUP, current_group_order())
-                for index, action in enumerate(desired):
-                    if action in native:
-                        continue  # already present as a native item; don't duplicate
-                    menu.addAction(action, MENU_GROUP, min(index, 255))
-                    record.add(action)
+                sync_menu(menu)
             except Exception as e:
                 log_error("Custom Context: failed to populate context menu: %s" % e)
+
+    def apply_to_open_views():
+        """Re-sync the context menu of every currently open view.
+
+        OnContextMenuCreated only touches views built after a change, so when the
+        user edits their selection we walk the already-open tabs/frames and apply
+        the change immediately -- no restart or reopen required.
+        """
+        for ctx in UIContext.allContexts():
+            try:
+                tabs = ctx.getTabs()
+            except Exception:
+                continue
+            for tab in tabs:
+                try:
+                    frames = ctx.getAllViewFramesForTab(tab)
+                except Exception:
+                    continue
+                for frame in frames:
+                    try:
+                        view = frame.getCurrentViewInterface()
+                    except Exception:
+                        view = None
+                    if view is None:
+                        continue
+                    try:
+                        sync_menu(view.contextMenu())
+                    except Exception:
+                        pass
 
     class ConfigureDialog(QDialog):
         """Two-pane picker: search/add on the left, ordered selection on the right."""
@@ -253,6 +300,9 @@ if _UI_AVAILABLE:
                                       scope=SettingsScope.SettingsUserScope)
             except Exception as e:
                 log_error("Custom Context: failed to save settings: %s" % e)
+            # Push the change to views that are already open so it takes effect
+            # immediately rather than only on newly created views.
+            apply_to_open_views()
             self.accept()
 
     _config_dialog = None
@@ -284,9 +334,12 @@ if _UI_AVAILABLE:
         Settings().register_setting(SETTING_ORDER, json.dumps({
             "title": "Context Menu Section Position",
             "type": "number",
-            "default": DEFAULT_ORDER,
-            "minValue": 0,
-            "maxValue": 255,
+            # Declared as a double (note the float literals): the value is read and
+            # written with get_double/set_double, and the registered type must agree
+            # or the core throws "data_.f.flags & kInt64Flag" on every read.
+            "default": float(DEFAULT_ORDER),
+            "minValue": 0.0,
+            "maxValue": 255.0,
             "description": "Ordering value (0-255) for where the custom action group "
                            "appears in the right-click menu; lower is higher up.",
             "ignore": ["SettingsProjectScope", "SettingsResourceScope"],
