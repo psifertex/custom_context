@@ -24,7 +24,7 @@ try:
     from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                                    QLineEdit, QListWidget, QListWidgetItem,
                                    QPushButton, QSpinBox, QWidget, QDialogButtonBox,
-                                   QAbstractItemView)
+                                   QAbstractItemView, QMessageBox)
     _UI_AVAILABLE = True
 except ImportError:
     # Running headless: there is nothing for this plugin to do.
@@ -419,15 +419,54 @@ if _UI_AVAILABLE:
 
         def saveAndAccept(self):
             chosen = [self.selected.item(i).text() for i in range(self.selected.count())]
+
+            # Attempt both writes independently and collect every failure (raised
+            # exception or a False return from the core) so the user sees the full
+            # picture in one message rather than discovering them one at a time.
+            failures = []
+
             try:
-                Settings().set_string_list(SETTING_ACTIONS, chosen,
-                                           scope=SettingsScope.SettingsUserScope)
-                Settings().set_double(SETTING_ORDER, float(self.orderSpin.value()),
-                                      scope=SettingsScope.SettingsUserScope)
+                ok = Settings().set_string_list(SETTING_ACTIONS, chosen,
+                                                scope=SettingsScope.SettingsUserScope)
+                if not ok:
+                    failures.append((SETTING_ACTIONS,
+                                     "Settings.set_string_list returned False; "
+                                     "the core refused to persist the value."))
             except Exception as e:
-                log_error("Custom Context: failed to save settings: %s" % e)
-            # Push the change to views that are already open so it takes effect
-            # immediately rather than only on newly created views.
+                failures.append((SETTING_ACTIONS, "%s: %s" % (type(e).__name__, e)))
+
+            try:
+                ok = Settings().set_double(SETTING_ORDER, float(self.orderSpin.value()),
+                                           scope=SettingsScope.SettingsUserScope)
+                if not ok:
+                    failures.append((SETTING_ORDER,
+                                     "Settings.set_double returned False; the "
+                                     "core refused to persist the value."))
+            except Exception as e:
+                failures.append((SETTING_ORDER, "%s: %s" % (type(e).__name__, e)))
+
+            if failures:
+                # Surface to the user and keep the dialog open so they can adjust
+                # and retry or cancel. We deliberately do NOT call
+                # apply_to_open_views() here: at least one write didn't land, so
+                # the persisted state may be partial, and pushing that to live
+                # menus would make every open view inconsistent with the user's
+                # intent. Better to leave existing menus alone until a clean save.
+                details = "\n".join("  • %s — %s" % (k, msg) for k, msg in failures)
+                log_error("Custom Context: settings write failed; "
+                          "menus not updated.\n%s" % details)
+                QMessageBox.critical(
+                    self,
+                    "Custom Context — Save Failed",
+                    "Couldn't save the configuration; the right-click menu has "
+                    "not been updated. Adjust and try again, or cancel.\n\n"
+                    + details,
+                )
+                return  # leave the dialog open; do not apply stale state
+
+            # Both writes succeeded. Push the change to views that are already
+            # open so it takes effect immediately rather than only on newly
+            # created views.
             apply_to_open_views()
             self.accept()
 
